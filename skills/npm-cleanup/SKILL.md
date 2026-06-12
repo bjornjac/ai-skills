@@ -190,3 +190,125 @@ systemctl daemon-reload
 systemctl restart <unit>.timer
 ```
 
+## Create Updaters
+
+When the user asks to create the updater, generate a platform-native updater that applies the policy above. Do not create project-local scripts for this; this is host tooling.
+
+### Linux or Unix with systemd
+
+Use systemd only on hosts that actually have systemd. Create `/etc/systemd/system/ai-tools-update.service`:
+
+```ini
+[Unit]
+Description=Update global AI CLI and package-manager tools
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+KillMode=process
+Environment=HOME=/root
+Environment=XDG_CONFIG_HOME=/root/.config
+Environment=PNPM_HOME=/usr/local
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStartPre=/usr/bin/install -d -o root -g root -m 0755 /usr/local/share/pnpm /usr/local/share/pnpm/global /usr/local/bin /usr/local/lib/node_modules
+ExecStartPre=/bin/sh -c 'printf "%s\n" "PNPM_HOME=/usr/local" > /etc/environment'
+ExecStartPre=/bin/sh -c 'printf "%s\n%s\n" "global-dir=/usr/local/share/pnpm/global" "global-bin-dir=/usr/local/bin" > /etc/npmrc'
+ExecStartPre=/bin/sh -c 'chown -R root:root /usr/local/share/pnpm /usr/local/lib/node_modules; chmod 0755 /usr/local/share/pnpm /usr/local/share/pnpm/global /usr/local/bin /usr/local/lib/node_modules'
+ExecStartPre=/usr/local/bin/npm install -g --force npm@latest pnpm@latest corepack@latest
+ExecStartPre=-/bin/sh -c 'for name in npm npx pnpm pnpx corepack fallow fallow-lsp fallow-mcp codex claude agent-run rg ripgrep pm2 pm2-dev pm2-docker pm2-runtime tsx tsc; do rm -f "/usr/local/share/pnpm/bin/$name"; done; rm -rf /usr/local/share/pnpm/.tools/pnpm'
+ExecStartPre=-/bin/sh -c 'if command -v pnpm >/dev/null 2>&1; then pnpm config set --global global-dir /usr/local/share/pnpm/global; pnpm config set --global global-bin-dir /usr/local/bin; pnpm remove -g corepack fallow @openai/codex @anthropic-ai/claude-code @technomoron/agent-run ripgrep rg pm2 tsx typescript; fi'
+ExecStart=/usr/local/bin/npm install -g --force fallow@latest ripgrep@latest pm2@latest tsx@latest typescript@latest @openai/codex@latest @anthropic-ai/claude-code@latest @technomoron/agent-run@latest
+ExecStartPost=-/bin/sh -c 'if /usr/local/bin/pm2 ping >/dev/null 2>&1; then /usr/bin/timeout 120 /usr/local/bin/pm2 update; fi'
+```
+
+Create `/etc/systemd/system/ai-tools-update.timer`:
+
+```ini
+[Unit]
+Description=Run AI tool updater hourly
+
+[Timer]
+OnBootSec=10m
+OnUnitActiveSec=1h
+AccuracySec=5m
+Unit=ai-tools-update.service
+
+[Install]
+WantedBy=timers.target
+```
+
+Enable it with:
+
+```sh
+systemctl daemon-reload
+systemctl enable --now ai-tools-update.timer
+systemd-analyze verify /etc/systemd/system/ai-tools-update.service /etc/systemd/system/ai-tools-update.timer
+```
+
+If `/usr/local/share/pnpm` is symlinked to another filesystem for disk space, keep the symlink and make the target root-owned `0755`. Do not replace the symlink unless the user explicitly asks to move storage.
+
+### Windows
+
+Windows does not use systemd. Use an elevated PowerShell scheduled task that runs as `SYSTEM`. Use machine-wide npm/pnpm paths so non-admin global installs fail.
+
+Create `C:\ProgramData\ai-tools-update\ai-tools-update.ps1`:
+
+```powershell
+$ErrorActionPreference = "Stop"
+
+$NpmPrefix = "C:\Program Files\nodejs"
+$PnpmGlobal = "C:\ProgramData\pnpm\global"
+$PnpmBin = "C:\Program Files\nodejs"
+
+New-Item -ItemType Directory -Force -Path $PnpmGlobal | Out-Null
+[Environment]::SetEnvironmentVariable("PNPM_HOME", $PnpmBin, "Machine")
+
+npm config set prefix $NpmPrefix --location=global
+pnpm config set --global global-dir $PnpmGlobal
+pnpm config set --global global-bin-dir $PnpmBin
+
+npm install -g --force npm@latest pnpm@latest corepack@latest
+
+pnpm remove -g corepack fallow @openai/codex @anthropic-ai/claude-code @technomoron/agent-run ripgrep rg pm2 tsx typescript 2>$null
+
+npm install -g --force `
+  fallow@latest `
+  ripgrep@latest `
+  pm2@latest `
+  tsx@latest `
+  typescript@latest `
+  @openai/codex@latest `
+  @anthropic-ai/claude-code@latest `
+  @technomoron/agent-run@latest
+
+try {
+  pm2 ping *> $null
+  pm2 update
+} catch {
+  # pm2 is not running; package update is still complete.
+}
+```
+
+Register the scheduled task from elevated PowerShell:
+
+```powershell
+New-Item -ItemType Directory -Force -Path "C:\ProgramData\ai-tools-update" | Out-Null
+$Action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"C:\ProgramData\ai-tools-update\ai-tools-update.ps1`""
+$Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(10) -RepetitionInterval (New-TimeSpan -Hours 1)
+$Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
+Register-ScheduledTask -TaskName "ai-tools-update" -Action $Action -Trigger $Trigger -Principal $Principal -Description "Update approved global AI CLI and package-manager tools"
+```
+
+Validate Windows policy from elevated PowerShell:
+
+```powershell
+npm prefix -g
+npm list -g --depth=0
+pnpm config get global-dir
+pnpm config get global-bin-dir
+pnpm list -g --depth 0
+Get-ScheduledTask -TaskName ai-tools-update
+```
+
+The expected Windows result is that npm and pnpm global bins both resolve to `C:\Program Files\nodejs`, pnpm's package repository resolves to `C:\ProgramData\pnpm\global`, and non-admin users cannot write either location.
