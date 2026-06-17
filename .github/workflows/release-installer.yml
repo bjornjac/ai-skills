@@ -1,0 +1,38 @@
+name: Build and Release Installer Package
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  release:
+    name: Create and upload installer packages
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Create .tgz and .zip archives
+        run: |
+          mkdir -p package-temp
+          cp README.md install.sh install.ps1 package-temp/
+          cp -r skills package-temp/
+          cd package-temp
+          tar -czf ../installer.tgz .
+          zip -r ../installer.zip .
+          cd ..
+          rm -rf package-temp
+
+      - name: Upload both archives to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            installer.tgz
+            installer.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,6 +1,6 @@
 ---
 name: npm-cleanup
-description: Audit and clean npm/pnpm global package state on Linux, Unix-like, and Windows hosts. Use when Codex needs to enforce that admin/root-owned global npm installs are limited to approved CLI packages, pnpm has no user-global installs, pnpm global state uses one admin/root-owned repository, updater units or scheduled tasks follow the same policy, and project directories keep using their own package managers and local dependencies.
+description: Audit and clean npm/pnpm global package state on Linux, Unix-like, and Windows hosts. Use when Codex needs to enforce that admin/root-owned global npm installs are limited to approved CLI packages, Node/npm/pnpm global assets live under /usr/local on Unix-like hosts, random npm/pnpm-installed shims, bins, links, and node_modules under /usr/bin, /usr/lib, /usr/share, or other non-/usr/local locations are removed, pnpm has no user-global installs, pnpm global state uses one admin/root-owned repository, updater units or scheduled tasks follow the same policy, and project directories keep using their own package managers and local dependencies.
 ---
 
 # NPM Cleanup
@@ -27,6 +27,8 @@ Treat `pnmp` in user requests as a likely typo for `pnpm` unless the repository 
 
 Global installs are host tooling only. Do not remove or rewrite project-local `node_modules`, lockfiles, `package.json`, package-manager fields, or workspace configuration unless the user explicitly asks for project cleanup. Projects should continue to use their preferred package manager and their own local dependencies.
 
+On Linux and Unix-like hosts, `/usr/local` is the only approved root for globally managed Node tooling. Approved command shims should resolve from `/usr/local/bin`, npm global packages from `/usr/local/lib/node_modules`, and pnpm global state from `/usr/local/share/pnpm`. Treat npm, pnpm, corepack, random npm/pnpm-installed shims, bins, links, and global `node_modules` under `/usr/bin`, `/usr/lib`, `/usr/lib/node_modules`, `/usr/share/nodejs`, `/usr/share/npm`, `/usr/share/pnpm`, `/opt`, or user-local global directories as stale or noncompliant unless the user explicitly asks to keep a distro-managed Node runtime. The cleanup target is that global package-manager assets and AI/tooling CLIs are consolidated under `/usr/local/*`.
+
 ## Root-Only Globals
 
 Require global package-manager commands to run as root:
@@ -41,7 +43,9 @@ For `npm`, the global prefix should be a root-owned system prefix such as `/usr/
 npm prefix -g
 npm root -g
 npm config get prefix
+for name in node npm npx corepack pnpm; do command -v "$name" 2>/dev/null || true; done
 test "$(npm prefix -g)/bin" = /usr/local/bin
+test "$(npm root -g)" = /usr/local/lib/node_modules
 stat -Lc '%U:%G %a %n' "$(npm prefix -g)" "$(npm root -g)" "$(npm prefix -g)/bin"
 ```
 
@@ -88,6 +92,7 @@ Inventory npm globals:
 npm list -g --depth=0 --json
 ls -la "$(npm root -g)"
 ls -la "$(npm prefix -g)/bin" | grep -E 'npm|pnpm|codex|claude|agent-run|corepack|fallow|rg|ripgrep|pm2|tsx|tsc'
+for name in node npm npx pnpm pnpx corepack codex claude agent-run fallow rg ripgrep pm2 pm2-dev pm2-runtime tsx tsc; do command -v "$name" 2>/dev/null || true; done
 ```
 
 Normalize the allowlist to package names before comparing:
@@ -114,11 +119,23 @@ test "$(pnpm bin -g)" = /usr/local/bin
 find /usr/local/share/pnpm -maxdepth 4 -type f -o -type l 2>/dev/null
 ```
 
+Inventory non-`/usr/local` Node assets that should be deleted or explained. This includes known host-tool commands and arbitrary npm/pnpm-created shims or symlinks in `/usr/bin` and related bin directories:
+
+```sh
+find /usr/bin /usr/sbin /bin /sbin -maxdepth 1 \( -type f -o -type l \) \
+  \( -name node -o -name npm -o -name npx -o -name pnpm -o -name pnpx -o -name corepack -o -name codex -o -name claude -o -name agent-run -o -name fallow -o -name rg -o -name ripgrep -o -name pm2 -o -name 'pm2-*' -o -name tsx -o -name tsc \) -print 2>/dev/null
+find /usr/bin /usr/sbin /bin /sbin -maxdepth 1 -type l -exec sh -c 'for p do t=$(readlink "$p" 2>/dev/null || true); case "$t" in *node_modules*|*npm*|*pnpm*|*corepack*) printf "%s -> %s\n" "$p" "$t";; esac; done' sh {} + 2>/dev/null
+find /usr/bin /usr/sbin /bin /sbin -maxdepth 1 -type f -exec sh -c 'for p do head -n 1 "$p" 2>/dev/null | grep -Eq "node|npm|pnpm|node_modules" && printf "%s\n" "$p"; done' sh {} + 2>/dev/null
+find /usr/lib /usr/share /opt -maxdepth 4 \( -type d -o -type l \) \
+  \( -path '*/node_modules' -o -path '*/node_modules/*' -o -path '*/npm' -o -path '*/pnpm' -o -path '*/corepack' -o -path '*/@openai/codex' -o -path '*/@anthropic-ai/claude-code' -o -path '*/@technomoron/agent-run' \) -print 2>/dev/null
+```
+
 The compliant result is:
 
 - `npm list -g --depth=0` contains only the allowlisted packages.
 - `pnpm list -g --depth 0` is empty or reports no globally installed packages.
 - npm and pnpm both resolve global bins to `/usr/local/bin`.
+- globally managed Node/npm/pnpm/corepack assets, random npm/pnpm-installed shims, bins, links, and global `node_modules` live under `/usr/local/*`, not `/usr/bin`, `/usr/lib`, `/usr/share`, `/opt`, or user-local global paths.
 - pnpm global directories are root-owned and not group/world-writable.
 - npm global prefix/root are root-owned and not group/world-writable.
 - user-global pnpm/npm directories are absent or unused.
@@ -136,6 +153,23 @@ Remove all pnpm global packages. Use exact package names from `pnpm list -g --de
 
 ```sh
 pnpm remove -g <package>
+```
+
+Remove stale non-`/usr/local` Node assets after confirming they are command shims, symlinks into npm/pnpm state, package-manager global directories, or obsolete package-manager assets. This includes random executables left by `npm install -g` or `pnpm add -g`, not only the approved tool names. Use package-manager uninstall commands first when an OS package manager owns the files; otherwise delete the stale paths directly. Do not touch project-local dependencies.
+
+```sh
+rm -f /usr/bin/npm /usr/bin/npx /usr/bin/pnpm /usr/bin/pnpx /usr/bin/corepack
+rm -f /usr/bin/codex /usr/bin/claude /usr/bin/agent-run /usr/bin/fallow /usr/bin/rg /usr/bin/ripgrep /usr/bin/pm2 /usr/bin/pm2-dev /usr/bin/pm2-runtime /usr/bin/tsx /usr/bin/tsc
+find /usr/bin /usr/sbin /bin /sbin -maxdepth 1 -type l -exec sh -c 'for p do t=$(readlink "$p" 2>/dev/null || true); case "$t" in *node_modules*|*npm*|*pnpm*|*corepack*) rm -f "$p";; esac; done' sh {} + 2>/dev/null
+rm -rf /usr/lib/node_modules /usr/lib/npm /usr/lib/pnpm /usr/lib/corepack
+rm -rf /usr/share/nodejs/npm /usr/share/nodejs/pnpm /usr/share/nodejs/corepack /usr/share/npm /usr/share/pnpm
+```
+
+If a stale `/usr/bin/node` shadows the intended `/usr/local/bin/node`, remove it only after installing or confirming a working `/usr/local/bin/node` and confirming the user wants Node itself managed from `/usr/local`:
+
+```sh
+test -x /usr/local/bin/node
+rm -f /usr/bin/node
 ```
 
 Remove stale pnpm global command shims only after confirming the target package has been removed. If pnpm previously used a separate bin home, remove stale files there. If stale shims are in `/usr/local/bin`, remove only links that point into pnpm global state; do not blindly delete npm-managed commands from `/usr/local/bin`.
@@ -180,7 +214,7 @@ systemctl cat <unit>.service
 systemctl cat <unit>.timer
 ```
 
-If an updater installs non-allowlisted npm globals, remove them from `ExecStart` and uninstall them globally. If an updater leaves pnpm global directories writable by non-root users, fix ownership and permissions before restarting the timer:
+If an updater installs non-allowlisted npm globals, remove them from `ExecStart` and uninstall them globally. If an updater installs or references Node package-manager assets, random npm/pnpm shims, bins, links, or `node_modules` under `/usr/bin`, `/usr/lib`, `/usr/share`, `/opt`, or user-local paths, change it to use `/usr/local/bin`, `/usr/local/lib/node_modules`, and `/usr/local/share/pnpm`, then delete the stale non-`/usr/local` assets. If an updater leaves pnpm global directories writable by non-root users, fix ownership and permissions before restarting the timer:
 
 ```sh
 chown -R root:root /usr/local/share/pnpm /usr/local/lib/node_modules
@@ -215,6 +249,7 @@ ExecStartPre=/usr/bin/install -d -o root -g root -m 0755 /usr/local/share/pnpm /
 ExecStartPre=/bin/sh -c 'printf "%s\n" "PNPM_HOME=/usr/local" > /etc/environment'
 ExecStartPre=/bin/sh -c 'printf "%s\n%s\n" "global-dir=/usr/local/share/pnpm/global" "global-bin-dir=/usr/local/bin" > /etc/npmrc'
 ExecStartPre=/bin/sh -c 'chown -R root:root /usr/local/share/pnpm /usr/local/lib/node_modules; chmod 0755 /usr/local/share/pnpm /usr/local/share/pnpm/global /usr/local/bin /usr/local/lib/node_modules'
+ExecStartPre=-/bin/sh -c 'rm -f /usr/bin/npm /usr/bin/npx /usr/bin/pnpm /usr/bin/pnpx /usr/bin/corepack /usr/bin/codex /usr/bin/claude /usr/bin/agent-run /usr/bin/fallow /usr/bin/rg /usr/bin/ripgrep /usr/bin/pm2 /usr/bin/pm2-dev /usr/bin/pm2-runtime /usr/bin/tsx /usr/bin/tsc; find /usr/bin /usr/sbin /bin /sbin -maxdepth 1 -type l -exec sh -c '"'"'for p do t=$(readlink "$p" 2>/dev/null || true); case "$t" in *node_modules*|*npm*|*pnpm*|*corepack*) rm -f "$p";; esac; done'"'"' sh {} + 2>/dev/null; if test -x /usr/local/bin/node; then rm -f /usr/bin/node; fi; rm -rf /usr/lib/node_modules /usr/lib/npm /usr/lib/pnpm /usr/lib/corepack /usr/share/nodejs/npm /usr/share/nodejs/pnpm /usr/share/nodejs/corepack /usr/share/npm /usr/share/pnpm'
 ExecStartPre=/usr/local/bin/npm install -g --force npm@latest pnpm@latest corepack@latest
 ExecStartPre=-/bin/sh -c 'for name in npm npx pnpm pnpx corepack fallow fallow-lsp fallow-mcp codex claude agent-run rg ripgrep pm2 pm2-dev pm2-docker pm2-runtime tsx tsc; do rm -f "/usr/local/share/pnpm/bin/$name"; done; rm -rf /usr/local/share/pnpm/.tools/pnpm'
 ExecStartPre=-/bin/sh -c 'if command -v pnpm >/dev/null 2>&1; then pnpm config set --global global-dir /usr/local/share/pnpm/global; pnpm config set --global global-bin-dir /usr/local/bin; pnpm remove -g corepack fallow @openai/codex @anthropic-ai/claude-code @technomoron/agent-run ripgrep rg pm2 tsx typescript; fi'
