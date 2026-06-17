@@ -1,6 +1,6 @@
 # ai-skills
 
-Reusable Codex skills for AI/tooling host maintenance.
+Reusable Codex and Claude Code skills for AI/tooling host maintenance.
 
 ## Install
 
@@ -22,11 +22,13 @@ Or from a local checkout:
 ./install.sh
 ```
 
-By default, skills are installed into `${CODEX_HOME:-$HOME/.codex}/skills`.
+By default, skills are installed into both `${CODEX_HOME:-$HOME/.codex}/skills` for Codex and `${CLAUDE_HOME:-$HOME/.claude}/skills` for Claude Code.
 
 Flags:
 
-- Install somewhere else with `--dest <path>` or `-Dest <path>`.
+- Install into one custom directory with `--dest <path>` or `-Dest <path>`.
+- Install only one product with `--target codex|claude|all` or `-Target codex|claude|all`.
+- Override product directories with `--codex-dest <path>` / `-CodexDest <path>` and `--claude-dest <path>` / `-ClaudeDest <path>`.
 - Install from a pinned release with `--version <version>` or `-Version <version>`.
 - Force the latest release with `--latest` or `-Latest`.
 - Use another fallback branch with `--ref <ref>` or `-Ref <ref>`.

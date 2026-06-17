@@ -1,5 +1,9 @@
 param(
     [string]$Dest,
+    [ValidateSet("all", "codex", "claude")]
+    [string]$Target = "all",
+    [string]$CodexDest,
+    [string]$ClaudeDest,
     [string]$Version = "latest",
     [switch]$Latest,
     [string]$Repo = "https://github.com/bjornjac/ai-skills",
@@ -10,10 +14,12 @@ param(
 if ($Help) {
     Write-Host @"
 Usage:
-  Install-AiSkills [-Dest <path>] [-Version <v> | -Latest] [-Repo <url>] [-Ref <ref>]
+  Install-AiSkills [-Dest <path>] [-Target all|codex|claude] [-CodexDest <path>] [-ClaudeDest <path>] [-Version <v> | -Latest] [-Repo <url>] [-Ref <ref>]
 
 Defaults:
-  Dest: `$env:CODEX_HOME\skills when CODEX_HOME is set, otherwise `$HOME\.codex\skills
+  Target: all
+  CodexDest: `$env:CODEX_HOME\skills when CODEX_HOME is set, otherwise `$HOME\.codex\skills
+  ClaudeDest: `$env:CLAUDE_HOME\skills when CLAUDE_HOME is set, otherwise `$HOME\.claude\skills
   Version: latest GitHub release
   Repo: https://github.com/bjornjac/ai-skills
   Ref: main fallback branch when a release is unavailable
@@ -21,7 +27,7 @@ Defaults:
     exit 0
 }
 
-function Get-AiSkillsDefaultDest {
+function Get-AiSkillsDefaultCodexDest {
     if ($env:CODEX_HOME) {
         return (Join-Path $env:CODEX_HOME "skills")
     }
@@ -29,9 +35,21 @@ function Get-AiSkillsDefaultDest {
     return (Join-Path (Join-Path $HOME ".codex") "skills")
 }
 
+function Get-AiSkillsDefaultClaudeDest {
+    if ($env:CLAUDE_HOME) {
+        return (Join-Path $env:CLAUDE_HOME "skills")
+    }
+
+    return (Join-Path (Join-Path $HOME ".claude") "skills")
+}
+
 function Install-AiSkills {
     param(
         [string]$Dest,
+        [ValidateSet("all", "codex", "claude")]
+        [string]$Target = "all",
+        [string]$CodexDest,
+        [string]$ClaudeDest,
         [string]$Version = "latest",
         [switch]$Latest,
         [string]$Repo = "https://github.com/bjornjac/ai-skills",
@@ -40,8 +58,12 @@ function Install-AiSkills {
 
     $ErrorActionPreference = "Stop"
 
-    if (-not $Dest) {
-        $Dest = Get-AiSkillsDefaultDest
+    if (-not $CodexDest) {
+        $CodexDest = Get-AiSkillsDefaultCodexDest
+    }
+
+    if (-not $ClaudeDest) {
+        $ClaudeDest = Get-AiSkillsDefaultClaudeDest
     }
 
     if ($Latest) {
@@ -104,34 +126,62 @@ function Install-AiSkills {
             }
         }
 
-        New-Item -ItemType Directory -Force -Path $Dest | Out-Null
+        function Install-AiSkillsTo {
+            param(
+                [string]$InstallDest,
+                [string]$Label
+            )
 
-        $installed = @()
-        Get-ChildItem -Path $src -Directory | ForEach-Object {
-            $skill = $_.FullName
-            if (-not (Test-Path (Join-Path $skill "SKILL.md"))) {
-                return
+            if (-not $InstallDest) {
+                throw "$Label destination must not be empty."
             }
 
-            $name = $_.Name
-            $target = Join-Path $Dest $name
-            $staging = Join-Path $Dest ".$name.installing"
+            New-Item -ItemType Directory -Force -Path $InstallDest | Out-Null
 
-            Remove-Item -Force -Recurse $staging -ErrorAction SilentlyContinue
-            Copy-Item -Recurse -Path $skill -Destination $staging
-            Remove-Item -Force -Recurse $target -ErrorAction SilentlyContinue
-            Move-Item -Path $staging -Destination $target
+            $installed = @()
+            Get-ChildItem -Path $src -Directory | ForEach-Object {
+                $skill = $_.FullName
+                if (-not (Test-Path (Join-Path $skill "SKILL.md"))) {
+                    return
+                }
 
-            $installed += $name
+                $name = $_.Name
+                $targetPath = Join-Path $InstallDest $name
+                $staging = Join-Path $InstallDest ".$name.installing"
+
+                Remove-Item -Force -Recurse $staging -ErrorAction SilentlyContinue
+                Copy-Item -Recurse -Path $skill -Destination $staging
+                Remove-Item -Force -Recurse $targetPath -ErrorAction SilentlyContinue
+                Move-Item -Path $staging -Destination $targetPath
+
+                $installed += $name
+            }
+
+            if ($installed.Count -eq 0) {
+                throw "No skills found to install."
+            }
+
+            Write-Host "Installed $Label skills to ${InstallDest}:"
+            foreach ($name in $installed) {
+                Write-Host "  - $name"
+            }
         }
 
-        if ($installed.Count -eq 0) {
-            throw "No skills found to install."
-        }
-
-        Write-Host "Installed skills to ${Dest}:"
-        foreach ($name in $installed) {
-            Write-Host "  - $name"
+        if ($Dest) {
+            Install-AiSkillsTo -InstallDest $Dest -Label "custom"
+        } else {
+            switch ($Target) {
+                "all" {
+                    Install-AiSkillsTo -InstallDest $CodexDest -Label "Codex"
+                    Install-AiSkillsTo -InstallDest $ClaudeDest -Label "Claude"
+                }
+                "codex" {
+                    Install-AiSkillsTo -InstallDest $CodexDest -Label "Codex"
+                }
+                "claude" {
+                    Install-AiSkillsTo -InstallDest $ClaudeDest -Label "Claude"
+                }
+            }
         }
     } finally {
         if ($tmpDir -and (Test-Path $tmpDir)) {
@@ -141,5 +191,5 @@ function Install-AiSkills {
 }
 
 if ($MyInvocation.MyCommand.Path -and $MyInvocation.InvocationName -ne ".") {
-    Install-AiSkills -Dest $Dest -Version $Version -Latest:$Latest -Repo $Repo -Ref $Ref
+    Install-AiSkills -Dest $Dest -Target $Target -CodexDest $CodexDest -ClaudeDest $ClaudeDest -Version $Version -Latest:$Latest -Repo $Repo -Ref $Ref
 }

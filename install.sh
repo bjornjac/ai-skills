@@ -4,14 +4,20 @@ set -euo pipefail
 repo_url="${AI_SKILLS_REPO_URL:-https://github.com/bjornjac/ai-skills}"
 ref="${AI_SKILLS_REF:-main}"
 version="${AI_SKILLS_VERSION:-latest}"
-dest="${AI_SKILLS_DEST:-"${CODEX_HOME:-"$HOME/.codex"}/skills"}"
+dest="${AI_SKILLS_DEST:-}"
+codex_dest="${AI_SKILLS_CODEX_DEST:-"${CODEX_HOME:-"$HOME/.codex"}/skills"}"
+claude_dest="${AI_SKILLS_CLAUDE_DEST:-"${CLAUDE_HOME:-"$HOME/.claude"}/skills"}"
+target="${AI_SKILLS_TARGET:-all}"
 
 usage() {
   cat <<'EOF'
 Usage: install.sh [options]
 
 Options:
-  --dest <path>    Install skills into this directory
+  --dest <path>          Install skills into only this directory
+  --target <target>      Install target: all, codex, or claude (default: all)
+  --codex-dest <path>    Codex skills directory (default: ${CODEX_HOME:-$HOME/.codex}/skills)
+  --claude-dest <path>   Claude skills directory (default: ${CLAUDE_HOME:-$HOME/.claude}/skills)
   --version <v>    Install from release version v, without the leading v (default: latest)
   --latest         Install from the latest GitHub release
   --repo <url>     Repository URL to download when not run from a checkout
@@ -28,6 +34,27 @@ while [ "$#" -gt 0 ]; do
       ;;
     --dest=*)
       dest="${1#--dest=}"
+      ;;
+    --target)
+      shift
+      target="${1:-}"
+      ;;
+    --target=*)
+      target="${1#--target=}"
+      ;;
+    --codex-dest)
+      shift
+      codex_dest="${1:-}"
+      ;;
+    --codex-dest=*)
+      codex_dest="${1#--codex-dest=}"
+      ;;
+    --claude-dest)
+      shift
+      claude_dest="${1:-}"
+      ;;
+    --claude-dest=*)
+      claude_dest="${1#--claude-dest=}"
       ;;
     --version|-v)
       shift
@@ -66,10 +93,18 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-if [ -z "$dest" ] || [ -z "$repo_url" ] || [ -z "$ref" ] || [ -z "$version" ]; then
-  echo "--dest, --repo, --ref, and --version must not be empty" >&2
+if [ -z "$repo_url" ] || [ -z "$ref" ] || [ -z "$version" ] || [ -z "$target" ]; then
+  echo "--repo, --ref, --version, and --target must not be empty" >&2
   exit 1
 fi
+
+case "$target" in
+  all|codex|claude) ;;
+  *)
+    echo "--target must be one of: all, codex, claude" >&2
+    exit 1
+    ;;
+esac
 
 tmp=
 cleanup() {
@@ -139,31 +174,58 @@ else
   fi
 fi
 
-mkdir -p "$dest"
+install_to() {
+  install_dest=$1
+  label=$2
 
-installed=
-for skill in "$src"/*; do
-  [ -d "$skill" ] || continue
-  [ -f "$skill/SKILL.md" ] || continue
+  if [ -z "$install_dest" ]; then
+    echo "$label destination must not be empty" >&2
+    exit 1
+  fi
 
-  name=$(basename "$skill")
-  target=$dest/$name
-  staging=$dest/.$name.installing
+  mkdir -p "$install_dest"
 
-  rm -rf "$staging"
-  cp -R "$skill" "$staging"
-  rm -rf "$target"
-  mv "$staging" "$target"
+  installed=
+  for skill in "$src"/*; do
+    [ -d "$skill" ] || continue
+    [ -f "$skill/SKILL.md" ] || continue
 
-  installed="${installed}${installed:+ }$name"
-done
+    name=$(basename "$skill")
+    skill_target=$install_dest/$name
+    staging=$install_dest/.$name.installing
 
-if [ -z "$installed" ]; then
-  echo "No skills found to install" >&2
-  exit 1
+    rm -rf "$staging"
+    cp -R "$skill" "$staging"
+    rm -rf "$skill_target"
+    mv "$staging" "$skill_target"
+
+    installed="${installed}${installed:+ }$name"
+  done
+
+  if [ -z "$installed" ]; then
+    echo "No skills found to install" >&2
+    exit 1
+  fi
+
+  echo "Installed $label skills to $install_dest:"
+  for name in $installed; do
+    echo "  - $name"
+  done
+}
+
+if [ -n "$dest" ]; then
+  install_to "$dest" "custom"
+else
+  case "$target" in
+    all)
+      install_to "$codex_dest" "Codex"
+      install_to "$claude_dest" "Claude"
+      ;;
+    codex)
+      install_to "$codex_dest" "Codex"
+      ;;
+    claude)
+      install_to "$claude_dest" "Claude"
+      ;;
+  esac
 fi
-
-echo "Installed skills to $dest:"
-for name in $installed; do
-  echo "  - $name"
-done

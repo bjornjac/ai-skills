@@ -37,7 +37,8 @@ Use this skill when asked to clean up AI-generated code.
    - linter
    - type checker
    - tests
-5. Report remaining risks.
+5. Run `fallow` as part of the cleanup check. If `fallow` is not available, install it as a global npm-managed tool with `npm install -g fallow` (equivalent to `npm -g install fallow`), then run it.
+6. Report remaining risks.
 
 ## Cleanup Guidance
 
